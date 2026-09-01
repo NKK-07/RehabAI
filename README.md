@@ -8,9 +8,10 @@ loud while they're still moving, and rewrites tomorrow's plan from what it actua
 
 Nothing leaves the device.
 
-> **Status: pre-implementation.** This repository currently holds the product and technical
-> specifications, the package structure, and two legacy modules from a superseded design.
-> No feature code is written yet. See [Project status](#project-status).
+> **Status: the loop is built; the camera gates are not yet verified.** Detection, policy,
+> storage, the local models and the UI are implemented and covered by 272 tests. What
+> remains needs a camera and a person: confirming left/right on real hardware, one live
+> end-to-end run, and recording real sessions. See [Project status](#project-status).
 
 ---
 
@@ -162,18 +163,32 @@ can actually measure the thing the number claims to be about.**
 
 ## Project status
 
-| Area | State |
-|---|---|
-| Product & technical specs | Complete — `PRD.md`, `TRD.md` |
-| Engineering review | Complete — 17 tasks, 15 locked decisions, cross-model challenge |
-| Package structure | Scaffolded |
-| Detection, policy, storage, UI | **Not started** |
-| Tests | **Not started** |
+| Checkpoint | Area | State |
+|---|---|---|
+| CP 0 | Environment, dependencies, model | Done |
+| CP 1 | Shared types with typed absence | Done |
+| CP 2 | Rules file + strict loader | Done |
+| CP 3 | Capture contract | Code done · **needs a physical left/right check** |
+| CP 4 | Deterministic lock policy | Done — five named cases |
+| CP 5 | Sit-to-stand detector | Done |
+| CP 6 | Cue latch + non-blocking audio | Done |
+| CP 7 | SQLite persistence | Done |
+| CP 8 | Local LLM + voice check-in | Done — containment eval passing |
+| CP 9 | PySide6 shell + entry point | Code done · **needs one live run** |
+| CP 10 | Privacy audit | Done — 46 automated checks |
+| CP 11 | Real recorded sessions | **Not started** — needs calendar time |
+| CP 12 | Demo rehearsal | **Not started** |
+
+272 tests pass, including 7 live-model containment cases. The thresholds in
+`rules/thresholds.v1.json` are still placeholders — the file announces that, and
+`--check` prints `UNTUNED` at startup so a demo cannot mistake an untuned build for
+a tuned one.
 
 `rehab_ai/pose_utils.py` and `rehab_ai/exercises.py` are from a superseded design.
-`pose_utils.py` will be reused; `exercises.py` will not — it's parameterised as a squat
-(standing-first), so a seated start makes it report a completed rep before the patient has
-moved.
+`pose_utils.py` is reused for its angle helpers and MediaPipe wrapper. `exercises.py` is
+**not** used — it's parameterised as a squat (standing-first), so a seated start makes it
+report a completed rep before the patient has moved. It is kept only as the reference for
+the regression test that pins that bug.
 
 ---
 
@@ -236,9 +251,14 @@ curl http://localhost:11434/api/tags
 Then:
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q      # works now
-.venv/Scripts/python.exe -m rehab_ai.app   # once the app entry point exists
+.venv/Scripts/python.exe -m pytest -q            # 272 tests
+.venv/Scripts/python.exe -m rehab_ai.app --check # startup checks only
+.venv/Scripts/python.exe -m rehab_ai.app --side left --days-post-op 21
 ```
+
+`--check` verifies the rules file, the cue clips, the local model and the database, then
+exits. It also **warms the model**: loading a 2B model takes around thirty seconds on CPU,
+and paying that at startup keeps it off the summary screen at the end of a session.
 
 ---
 
