@@ -40,8 +40,24 @@ from rehab_ai.rules.loader import ObservationRules
 
 LM = PoseLandmark
 
-# The four landmarks the detector reasons about, per side.
-_LANDMARKS = {
+# ---------------------------------------------------------------------------
+# TWO LANDMARK SETS, AND THE DIFFERENCE MATTERS
+# ---------------------------------------------------------------------------
+#
+# CLINICAL -- the four joints the hip and knee angles are built from. These
+# and ONLY these gate observation quality, because they are the measurement.
+#
+# SKELETON -- everything drawn on screen and used to confirm the patient is
+# framed and moving correctly. Richer tracking, but it must never affect
+# whether a rep is scored.
+#
+# Keeping them separate is not tidiness. observe_landmarks() takes the minimum
+# visibility across the clinical set; if the skeleton set were folded in, a
+# hand dropping out of frame would mark the rep UNOBSERVABLE while the knee sat
+# in plain view at 0.95. The camera would be refusing to score a movement it
+# could see perfectly well.
+
+_CLINICAL_LANDMARKS = {
     Side.LEFT: {
         "shoulder": LM.LEFT_SHOULDER,
         "hip": LM.LEFT_HIP,
@@ -55,6 +71,54 @@ _LANDMARKS = {
         "ankle": LM.RIGHT_ANKLE,
     },
 }
+
+# Backwards-compatible alias -- the clinical set is what "the landmarks the
+# detector reasons about" has always meant.
+_LANDMARKS = _CLINICAL_LANDMARKS
+
+_SKELETON_LANDMARKS = {
+    Side.LEFT: {
+        "ear": LM.LEFT_EAR,
+        "shoulder": LM.LEFT_SHOULDER,
+        "elbow": LM.LEFT_ELBOW,
+        "wrist": LM.LEFT_WRIST,
+        "hip": LM.LEFT_HIP,
+        "knee": LM.LEFT_KNEE,
+        "ankle": LM.LEFT_ANKLE,
+        "heel": LM.LEFT_HEEL,
+        "toe": LM.LEFT_FOOT_INDEX,
+    },
+    Side.RIGHT: {
+        "ear": LM.RIGHT_EAR,
+        "shoulder": LM.RIGHT_SHOULDER,
+        "elbow": LM.RIGHT_ELBOW,
+        "wrist": LM.RIGHT_WRIST,
+        "hip": LM.RIGHT_HIP,
+        "knee": LM.RIGHT_KNEE,
+        "ankle": LM.RIGHT_ANKLE,
+        "heel": LM.RIGHT_HEEL,
+        "toe": LM.RIGHT_FOOT_INDEX,
+    },
+}
+
+# Drawn as connected segments, head to toe.
+_SKELETON_BONES = (
+    ("ear", "shoulder"),
+    ("shoulder", "elbow"),
+    ("elbow", "wrist"),
+    ("shoulder", "hip"),
+    ("hip", "knee"),
+    ("knee", "ankle"),
+    ("ankle", "heel"),
+    ("heel", "toe"),
+)
+
+# Which of those are the clinical chain, for emphasis when drawing.
+_CLINICAL_BONES = (
+    ("shoulder", "hip"),
+    ("hip", "knee"),
+    ("knee", "ankle"),
+)
 
 
 def classify_quality(visibility: float, rules: ObservationRules) -> ObservationQuality:
@@ -91,7 +155,8 @@ class OperatedSideTracker:
             )
         self.operated_side = operated_side
         self._rules = rules
-        self._landmarks = _LANDMARKS[operated_side]
+        self._landmarks = _CLINICAL_LANDMARKS[operated_side]
+        self._skeleton = _SKELETON_LANDMARKS[operated_side]
         self._pose = _MediaPipePoseTracker(model_complexity=model_complexity)
 
     # -- lifecycle ----------------------------------------------------------
