@@ -1,7 +1,20 @@
 # RehabAI — UI/UX Plan
 
-**Status:** Draft v0.2  
-**Companion to:** [FEATURES.md](FEATURES.md) (canonical), [PRD.md](PRD.md), [TRD.md](TRD.md)  
+> ## ⚠️ SUPERSEDED — do not build from this file
+>
+> **Superseded by:** [PRD.md](PRD.md) v1.0 and [TRD.md](TRD.md) v1.0, 2026-09-01.
+>
+> This plans the UI for the earlier product described in [FEATURES.md](FEATURES.md), which
+> is itself superseded. Three things here are now actively wrong: it makes "% of the good
+> side" the hero metric (a symmetry ratio PRD.md §3 rejects), it bans pose overlays and
+> live video — which are the current product's central feature — and it plans for IMU/EMG
+> hardware that PRD.md §7 explicitly rules out.
+>
+> The instinct it got right, and which survives: the layout should read as **phone-shaped**
+> — a narrow column with large controls.
+
+**Status:** ~~Draft v0.2~~ — superseded 2026-09-01  
+**Companion to:** [FEATURES.md](FEATURES.md) (also superseded), [PRD.md](PRD.md), [TRD.md](TRD.md)  
 **Framework:** PySide6 (desktop shell). Layout is **phone-shaped**: narrow column, large controls. Live skeleton video is **not** a screen.
 
 ## 1. Design principles

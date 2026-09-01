@@ -1,10 +1,21 @@
 # RehabAI — Features
 
-**Status:** Canonical (v1.1)  
+> ## ⚠️ SUPERSEDED — do not build from this file
+>
+> **Superseded by:** [PRD.md](PRD.md) v1.0 and [TRD.md](TRD.md) v1.0, 2026-09-01.
+>
+> This describes an earlier, materially different product: quad sets as the core
+> exercise, muscle activation measured via EMG, and "% of the good side" — a bilateral
+> symmetry ratio — as the hero metric. PRD.md §3 rejects all three, with reasoning.
+>
+> **Retained as history, and for one thing worth salvaging:** the copy bank in §4. PRD.md
+> §8 asserts a copy-tone rule but supplies no phrases; this file has them.
+
+**Status:** ~~Canonical (v1.1)~~ — superseded 2026-09-01  
 **Last updated:** 2026-09-01  
 **Companion to:** [PRD.md](PRD.md), [UI_UX_PLAN.md](UI_UX_PLAN.md), [TRD.md](TRD.md)
 
-This file is the product. Other docs must not contradict it.
+~~This file is the product. Other docs must not contradict it.~~
 
 RehabAI is a **home treatment loop** for post-knee-replacement and post-ACL rehab. It **doses** tomorrow’s session, **refuses** unsafe progressions, and **retrains the quad**. It is not a live skeleton form-checker.
 
