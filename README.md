@@ -202,13 +202,22 @@ tests/            pytest suites
 
 ## Getting started
 
-> Nothing is runnable yet. These are the steps once implementation begins.
+**Python 3.11 is required.** `mediapipe==0.10.21` publishes no wheels for 3.13 or 3.14,
+so a newer interpreter will fail to install rather than fail at runtime.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+# with uv (recommended -- resolves and fetches 3.11 for you)
+uv venv --python 3.11 .venv
+uv pip install --python .venv -r requirements.txt
+
+# or with a 3.11 interpreter you already have
+py -V:3.11 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt   # Windows
 ```
+
+Run everything through the venv interpreter explicitly (`.venv/Scripts/python.exe` on
+Windows, `.venv/bin/python` elsewhere) rather than a bare `python`, which may resolve to a
+different interpreter on your PATH.
 
 The language model runs locally through [Ollama](https://ollama.com), which must be
 installed and running:
@@ -220,15 +229,15 @@ ollama pull gemma2:2b
 Verify the environment:
 
 ```bash
-python -c "import mediapipe, cv2, PySide6, faster_whisper, sounddevice; print('ok')"
+.venv/Scripts/python.exe -c "import mediapipe, cv2, PySide6, faster_whisper, sounddevice; print('ok')"
 curl http://localhost:11434/api/tags
 ```
 
 Then:
 
 ```bash
-python -m rehab_ai.app
-pytest -q
+.venv/Scripts/python.exe -m pytest -q      # works now
+.venv/Scripts/python.exe -m rehab_ai.app   # once the app entry point exists
 ```
 
 ---
