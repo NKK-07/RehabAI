@@ -156,30 +156,42 @@ def check_containment(sentence: str, decision: LockDecision) -> ContainmentResul
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
-    "You rewrite a rehabilitation app's decision as one or two short sentences "
-    "for a patient recovering from knee surgery.\n"
+    "You rewrite a rehabilitation app's decision into plain sentences for a "
+    "patient recovering from knee surgery.\n"
     "RULES:\n"
-    "- State only the facts you are given. Do not add reasons, causes, advice "
-    "or diagnoses that are not listed.\n"
+    "- Mention EVERY numbered fact. Leaving one out is the worst mistake you "
+    "can make here; the patient is entitled to the whole reason.\n"
+    "- Add NOTHING else. No causes, no advice, no diagnoses, no reassurance "
+    "that was not given to you.\n"
     "- Be calm and specific. Never alarming. Do not use words like warning, "
     "risk, danger, abnormal or asymmetry.\n"
     "- Do not tell the patient what caused their symptoms.\n"
-    "- Plain English, second person, under 40 words. No preamble, no bullet "
+    "- Plain English, second person, at most 55 words. No preamble, no bullet "
     "points, no quotation marks. Output the sentences only."
 )
 
 
 def build_prompt(decision: LockDecision, policy_rules: PolicyRules) -> str:
     """The model sees the verdict and the facts behind it -- never the raw
-    inputs, and never the thresholds. It has nothing to decide with."""
+    inputs, and never the thresholds. It has nothing to decide with.
+
+    Facts are numbered and the count is stated. Small models drop facts for
+    brevity when given a bare list; an explicit count gives them something to
+    check themselves against, and it is what the containment eval measures.
+    """
     headline = policy_rules.copy.get(decision.decision.value, "")
-    facts = "\n".join(f"- {REASON_FACTS[code]}" for code in decision.reason_codes)
+    facts = "\n".join(
+        f"{i}. {REASON_FACTS[code]}" for i, code in enumerate(decision.reason_codes, 1)
+    )
+    count = len(decision.reason_codes)
+    plural = "s" if count != 1 else ""
 
     return (
         f"{_SYSTEM}\n\n"
         f"The decision has already been made. It is: {headline}\n\n"
-        f"The facts behind it:\n{facts}\n\n"
-        "Rewrite this for the patient."
+        f"There are {count} fact{plural} behind it. Your sentences must cover "
+        f"all {count}:\n{facts}\n\n"
+        f"Rewrite this for the patient, covering all {count} fact{plural}."
     )
 
 
@@ -211,7 +223,50 @@ def health_check(rules: ExplainRules) -> str:
             "Or set explain.model in rules/thresholds.v1.json to one you have."
         )
 
+    warm_up(rules)
     return rules.model
+
+
+# Loading a 2B model into memory takes far longer than generating with one:
+# measured on the development machine, roughly 32 seconds cold against half a
+# second warm. That whole cost lands on the FIRST call.
+#
+# Left unwarmed, the first call of the day is the one on the summary screen, at
+# the end of a session, in front of an audience -- and the app would appear to
+# hang for half a minute. So the load is paid deliberately at startup, where a
+# progress message is honest and expected.
+WARM_UP_TIMEOUT_S = 180
+
+
+def warm_up(rules: ExplainRules) -> float:
+    """Force the model into memory. Returns how long it took, in seconds.
+
+    Uses its own generous timeout: this is the model load, not a generation,
+    and rules.timeout_s is sized for the latter.
+    """
+    import time
+
+    started = time.perf_counter()
+    try:
+        response = requests.post(
+            f"{rules.endpoint}/api/generate",
+            json={
+                "model": rules.model,
+                "prompt": "ready",
+                "stream": False,
+                "options": {"num_predict": 1},
+            },
+            timeout=WARM_UP_TIMEOUT_S,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ExplainUnavailable(
+            f"model {rules.model!r} is installed but would not load: {exc}\n\n"
+            "Loading a 2B model can take around half a minute on CPU. If this "
+            "timed out, the machine may not have enough free memory."
+        ) from exc
+
+    return time.perf_counter() - started
 
 
 def phrase(decision: LockDecision, rules: ExplainRules, policy_rules: PolicyRules) -> str:
