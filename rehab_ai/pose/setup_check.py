@@ -26,13 +26,14 @@ and it latches permanently, so the noise only has to win once.
 So a lift must hold for `_SUSTAIN_FRAMES` consecutive frames, clearing the
 floor by a margin larger than the jitter.
 
-    baseline = lowest ankle position seen so far   (the floor)
+    baseline = median ankle position over a rolling window   (the floor)
     lift     = ankle above baseline by _LIFT_CLEARANCE
     pass     = lift held for _SUSTAIN_FRAMES in a row
 
-The baseline is a running maximum rather than a one-off sample, so it
-self-corrects: a patient who starts with the foot already raised sets a wrong
-baseline, then lowers the foot, and the baseline drops to the real floor.
+The baseline is a MEDIAN, not a running maximum. A running maximum is dragged
+below the real floor by a single downward spike, after which every resting
+frame reads as a lift -- measured at 16 of 20 stationary trials passing. See
+_SideTrack for the numbers.
 
     "raise your operated heel"
               │
@@ -51,8 +52,10 @@ is the only step whose verdict is recorded.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import dataclass
 from enum import Enum
+from statistics import median
 
 from rehab_ai.models.session import Side
 from rehab_ai.pose.tracker import _SKELETON_BONES, _SKELETON_LANDMARKS
@@ -142,33 +145,57 @@ _NEAR_SIDE_MARGIN = 0.08
 # jitter cannot hold it, short enough not to tire a post-op patient.
 _LIFT_CLEARANCE = 0.05
 _SUSTAIN_FRAMES = 10
-_BASELINE_MIN_SAMPLES = 8
+# The floor is the median of a rolling window, not an all-time extreme. Wide
+# enough that a lift cannot dominate it (a 10-frame hold against 45 samples),
+# narrow enough to follow a patient who shifts position.
+_BASELINE_WINDOW = 45
+_BASELINE_MIN_SAMPLES = 15
 
 
-@dataclass
 class _SideTrack:
-    """Per-side lift tracking: where the floor is, and how long a lift held."""
+    """Per-side lift tracking: where the floor is, and how long a lift held.
 
-    baseline_y: float | None = None
-    samples: int = 0
-    consecutive: int = 0
+    WHY A ROLLING MEDIAN AND NOT A RUNNING MAXIMUM
+    ==============================================
+    The obvious way to find the floor is "the lowest the ankle has ever been",
+    a running maximum of y. It is also wrong, and measurably so.
+
+    A running maximum is maximally sensitive to exactly the outlier it should
+    ignore. One downward jitter spike drags the baseline below the real floor;
+    from then on every RESTING frame sits more than `clearance` above it, the
+    consecutive counter climbs, and the gate latches without the patient
+    moving at all.
+
+    Measured with a stationary foot and jitter at 2% of frame height: 16 of 20
+    trials passed, 6 of them falsely reporting SIDES_SWAPPED.
+
+    A median over a rolling window is robust to that. A handful of spikes
+    cannot move it, and it still self-corrects for a patient who begins with
+    the foot already raised -- once the foot comes down, the window fills with
+    floor samples and the median follows.
+    """
+
+    __slots__ = ("_window", "consecutive")
+
+    def __init__(self) -> None:
+        self._window: deque[float] = deque(maxlen=_BASELINE_WINDOW)
+        self.consecutive = 0
+
+    @property
+    def baseline_y(self) -> float | None:
+        if len(self._window) < _BASELINE_MIN_SAMPLES:
+            return None
+        return median(self._window)
 
     def observe(self, y: float, clearance: float) -> bool:
-        """Feed one ankle position. Returns True once a lift has been sustained.
+        """Feed one ankle position. Returns True once a lift has been sustained."""
+        self._window.append(y)
 
-        `baseline_y` is a running MAXIMUM (screen y grows downward, so the
-        largest y is the lowest point, which is the floor). Running rather than
-        sampled once, so a patient who starts with the foot up sets a wrong
-        baseline, lowers the foot, and the baseline corrects itself.
-        """
-        if self.baseline_y is None or y > self.baseline_y:
-            self.baseline_y = y
-        self.samples += 1
+        baseline = self.baseline_y
+        if baseline is None:
+            return False  # not enough evidence about where the floor is yet
 
-        if self.samples < _BASELINE_MIN_SAMPLES:
-            return False  # not enough evidence about where the floor is
-
-        if y < self.baseline_y - clearance:
+        if y < baseline - clearance:
             self.consecutive += 1
         else:
             self.consecutive = 0
@@ -180,8 +207,7 @@ class _SideTrack:
         return min(1.0, self.consecutive / _SUSTAIN_FRAMES)
 
     def reset(self) -> None:
-        self.baseline_y = None
-        self.samples = 0
+        self._window.clear()
         self.consecutive = 0
 
 

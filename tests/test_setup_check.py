@@ -22,6 +22,7 @@ import pytest
 
 from rehab_ai.models.session import Side
 from rehab_ai.pose.setup_check import (
+    _BASELINE_WINDOW,
     _SUSTAIN_FRAMES,
     STEP_ORDER,
     SetupChecker,
@@ -104,8 +105,13 @@ def run(sequence, operated: Side = Side.LEFT, checker: SetupChecker | None = Non
 
 
 def settled(**kw):
-    """Enough identical frames for the floor baseline to be established."""
-    return [pose(**kw)] * 12
+    """Enough identical frames to fully flush the rolling baseline window.
+
+    Sized from _BASELINE_WINDOW rather than a literal, so tuning the window
+    cannot silently leave these fixtures feeding a half-filled buffer -- which
+    is exactly what happened when the window grew from 8 to 45.
+    """
+    return [pose(**kw)] * (_BASELINE_WINDOW + 5)
 
 
 def held(frames: int = _SUSTAIN_FRAMES + 2, **kw):
