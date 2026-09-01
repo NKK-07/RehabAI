@@ -201,3 +201,41 @@ def test_no_baseline_is_reported_before_enough_samples():
     for _ in range(3):
         assert track.observe(400.0, clearance=20.0) is False
     assert track.baseline_y is None
+
+
+# --------------------------------------------------------------------------
+# Replay path -- a clip must go through the identical capture contract
+# --------------------------------------------------------------------------
+
+
+def test_video_replay_shares_the_camera_capture_contract():
+    """A replay path that mirrored differently from the live path would
+    'reproduce' bugs that do not exist, and hide ones that do."""
+    from rehab_ai.camera.capture import CameraSource, VideoFileSource
+
+    assert issubclass(VideoFileSource, CameraSource)
+    assert "build_frame" not in VideoFileSource.__dict__, (
+        "VideoFileSource overrides build_frame -- the mirroring contract would fork"
+    )
+
+
+def test_video_replay_refuses_a_mirroring_capture_config():
+    """Inherited from CameraSource, and worth pinning: replaying a clip through
+    a mirrored config would flip left and right just as the live path would."""
+    from rehab_ai.camera.capture import VideoFileSource
+    from rehab_ai.rules.loader import CaptureRules
+
+    bad = CaptureRules(
+        mirror_before_inference=True, mirror_display_only=True,
+        target_fps=25, pose_model_complexity=1,
+    )
+    with pytest.raises(ValueError, match="mirror_before_inference"):
+        VideoFileSource(bad, "clip.mp4")
+
+
+def test_a_missing_clip_fails_loudly():
+    from rehab_ai.camera.capture import CameraError, VideoFileSource
+    from rehab_ai.rules.loader import load_rules
+
+    with pytest.raises(CameraError, match="could not open video file"):
+        VideoFileSource(load_rules().capture, "does-not-exist.mp4").open()

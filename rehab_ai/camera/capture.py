@@ -141,3 +141,48 @@ class CameraSource:
             width=width,
             height=height,
         )
+
+
+class VideoFileSource(CameraSource):
+    """Replays a recorded clip through the identical capture contract.
+
+    WHY THIS EXISTS
+    ===============
+    A live camera makes the setup gate impossible to debug: it runs once, in
+    front of a person, and produces no artefact. When it stalls you are left
+    guessing at which threshold it stalled on.
+
+    Recording a clip once and replaying it makes the gate reproducible. The
+    same footage feeds the threshold tuning TRD 8 step 3 calls for, so this is
+    not scaffolding -- it is the tuning harness.
+
+    It subclasses CameraSource deliberately rather than duplicating the
+    contract, so a clip goes through the same never-mirror-before-inference
+    rule the camera does. A replay path that mirrored differently would
+    "reproduce" a bug that did not exist.
+    """
+
+    def __init__(self, rules: CaptureRules, path: str) -> None:
+        super().__init__(rules, device_index=0)
+        self._path = path
+        self.frame_count = 0
+
+    def open(self) -> "VideoFileSource":
+        capture = cv2.VideoCapture(self._path)
+        if not capture.isOpened():
+            capture.release()
+            raise CameraError(f"could not open video file: {self._path}")
+        self._capture = capture
+        self.frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        return self
+
+    def read(self, timestamp: float) -> Frame:
+        """Raises CameraError at end of file, which the caller treats as done."""
+        if self._capture is None:
+            raise CameraError("video file is not open; call open() first")
+
+        ok, raw = self._capture.read()
+        if not ok or raw is None:
+            raise CameraError("end of video")
+
+        return self.build_frame(raw, timestamp)
