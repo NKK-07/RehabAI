@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "tuned_against": "UNTUNED - placeholder values, not yet fitted to real footage",
+  "tuned_on": null,
+  "notes": [
+    "This file is the handoff artifact between the Python prototype and the Kotlin build.",
+    "The Kotlin app loads it verbatim. Do not retype these numbers into either codebase.",
+    "Every value below is a placeholder until CP 5/CP 6 tuning against real recorded reps.",
+    "TRD.md 5 is explicit that the hip-drive threshold is the one number in this system",
+    "with no literature behind it. Treat these as starting points, not findings."
+  ],
+
+  "phase": {
+    "_doc": "Knee angle in degrees, hip-knee-ankle. Seated is roughly 90, standing roughly 175.",
+    "seated_max_knee_angle": 110.0,
+    "rise_onset_knee_angle": 120.0,
+    "standing_min_knee_angle": 160.0,
+    "descent_onset_knee_angle": 155.0,
+    "min_rise_duration_s": 0.4,
+    "max_rise_duration_s": 6.0
+  },
+
+  "observation": {
+    "_doc": "Landmark visibility is the raw measurement; these turn it into a quality judgement.",
+    "good_min_visibility": 0.65,
+    "degraded_min_visibility": 0.40,
+    "_doc_tolerance": "How much of the RISE may be unobservable before the rep is INVALID.",
+    "degraded_max_consecutive_frames": 6,
+    "invalid_min_unobserved_fraction": 0.25
+  },
+
+  "strategy": {
+    "_doc": "StrategySignal is 0.0 fully knee-dominant, 1.0 fully hip-dominant.",
+    "_doc_ratio": "Computed from delta-hip-angle vs delta-knee-angle across the rise window.",
+    "hip_drive_saturation_ratio": 2.5,
+    "trigger_threshold": 0.70,
+    "reset_threshold": 0.60,
+    "_doc_windows": "Separate windows: the trigger must be fast, the meter must look steady.",
+    "trigger_smoothing_frames": 3,
+    "meter_smoothing_frames": 7,
+    "rep_flag_min_signal": 0.70
+  },
+
+  "descent": {
+    "_doc": "Eccentric control. Higher is smoother; a collapsing descent scores low.",
+    "min_control_score": 0.50,
+    "smoothing_frames": 5
+  },
+
+  "cue": {
+    "_doc": "Fixed phrases, keyed by which threshold fired. Never generated at runtime.",
+    "_doc_latency": "keypoints -> signal -> playback start should stay under 200ms (TRD 5a).",
+    "max_latency_ms": 200,
+    "phrases": {
+      "hip_dominant": {
+        "text": "Drive through your knee",
+        "clip": "hip_dominant.wav"
+      },
+      "descent_uncontrolled": {
+        "text": "Lower yourself slowly",
+        "clip": "descent_uncontrolled.wav"
+      }
+    }
+  },
+
+  "policy": {
+    "_doc": "Deterministic lock rules. No AI touches any value in this block.",
+    "pain_lock_threshold": 5,
+    "pain_rest_only_threshold": 8,
+    "compensation_flag_rate_lock": 0.40,
+    "early_protocol_days": 7,
+    "_doc_copy": "Calm and specific, never alarming (PRD 8). Salvaged from FEATURES.md 4.",
+    "copy": {
+      "allow_full": "Everything is on the plan today.",
+      "lock_loaded": "Squats are off today.",
+      "rest_only": "Today is a rest day. Gentle movement only.",
+      "hold": "We could not see enough today to add loaded work."
+    }
+  },
+
+  "capture": {
+    "_doc": "The raw frame handed to the pose model is NEVER mirrored (CP 3).",
+    "_doc_why": "Mirroring swaps the model's LEFT/RIGHT labels, so the operated-side lock",
+    "_doc_why_2": "would silently point at the healthy leg. Flip for display only.",
+    "mirror_before_inference": false,
+    "mirror_display_only": true,
+    "target_fps": 25,
+    "pose_model_complexity": 1
+  },
+
+  "explain": {
+    "_doc": "Local LLM phrasing. It receives a finished LockDecision and cannot alter it.",
+    "provider": "ollama",
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "gemma2:2b",
+    "timeout_s": 20,
+    "max_tokens": 80
+  }
+}
