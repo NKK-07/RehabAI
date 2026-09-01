@@ -53,7 +53,7 @@ is the only step whose verdict is recorded.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from statistics import median
 
@@ -114,6 +114,8 @@ class SetupState:
     other_points: list[JointPoint]
     clinical_visibility: dict[str, float]
     hold_progress: float = 0.0  # 0..1 through the sustained hold
+    diagnostics: dict[str, str] = field(default_factory=dict)
+    blocked_reason: str | None = None
 
     @property
     def progress(self) -> tuple[int, int]:
@@ -203,6 +205,10 @@ class _SideTrack:
         return self.consecutive >= _SUSTAIN_FRAMES
 
     @property
+    def samples(self) -> int:
+        return len(self._window)
+
+    @property
     def hold_progress(self) -> float:
         return min(1.0, self.consecutive / _SUSTAIN_FRAMES)
 
@@ -261,7 +267,7 @@ class SetupChecker:
 
     def update(self, landmarks, width: int, height: int) -> SetupState:
         if landmarks is None:
-            return self._state(False, [], [], {}, 0.0)
+            return self._state(False, [], [], {}, 0.0, {}, "no one in view")
 
         operated_points = _points(landmarks, self.operated, width, height)
         other_points = _points(landmarks, self.operated.other, width, height)
@@ -269,27 +275,71 @@ class SetupChecker:
         ot = _by_name(other_points)
 
         self._done[SetupStep.IN_FRAME] = True
+        diagnostics: dict[str, str] = {}
 
-        # -- side-on: the two shoulders nearly overlap horizontally ----------
+        # -- ADVISORY: side-on -----------------------------------------------
+        # Framing guidance only. It does NOT gate the heel lift, and that is a
+        # deliberate correction. This heuristic reads shoulder spread, but
+        # side-on is exactly when the far shoulder is occluded and the pose
+        # model INFERS its position, so it can fail for a correctly seated
+        # person. Blocking the one rigorous check behind an unreliable one
+        # meant the rigorous check could never run, and the screen sat there
+        # saying nothing about why.
         if op.get("shoulder") and ot.get("shoulder"):
             spread = abs(op["shoulder"].x - ot["shoulder"].x) / max(width, 1)
+            diagnostics["shoulder spread"] = (
+                f"{spread:.3f} (want <={_SIDE_ON_MAX_SHOULDER_SPREAD})"
+            )
             if spread <= _SIDE_ON_MAX_SHOULDER_SPREAD:
                 self._done[SetupStep.SIDE_ON] = True
 
-        # -- operated side is the near one -----------------------------------
-        if self._done[SetupStep.SIDE_ON]:
-            joints = ("shoulder", "hip", "knee", "ankle")
-            if _mean_visibility(op, joints) >= _mean_visibility(ot, joints) + _NEAR_SIDE_MARGIN:
-                self._done[SetupStep.OPERATED_NEAR] = True
+        # -- ADVISORY: operated side is nearest -------------------------------
+        # Also non-gating. If the wrong leg faces the camera, the operated
+        # ankle simply will not be visible enough to score -- which the lift
+        # check already handles. Physics rather than a visibility margin.
+        joints = ("shoulder", "hip", "knee", "ankle")
+        op_vis, ot_vis = _mean_visibility(op, joints), _mean_visibility(ot, joints)
+        diagnostics["near-side margin"] = (
+            f"{op_vis - ot_vis:+.3f} (want >=+{_NEAR_SIDE_MARGIN})"
+        )
+        if op_vis >= ot_vis + _NEAR_SIDE_MARGIN:
+            self._done[SetupStep.OPERATED_NEAR] = True
 
-        # -- the heel lift, which proves the binding on a clinical landmark --
+        # -- THE GATE: the heel lift, on a clinical landmark -------------------
+        # Runs whenever a person is in frame. Nothing advisory blocks it.
         hold = 0.0
-        if self._done[SetupStep.OPERATED_NEAR] and self._verdict is SetupVerdict.WAITING:
+        blocked: str | None = None
+        if self._verdict is SetupVerdict.WAITING:
             clearance = _LIFT_CLEARANCE * height
 
             operated_lifted = self._track(self.operated, op, clearance)
             other_lifted = self._track(self.operated.other, ot, clearance)
-            hold = self._tracks[self.operated].hold_progress
+            track = self._tracks[self.operated]
+            hold = track.hold_progress
+
+            # Say why it is not passing yet. A gate that can stall with no
+            # explanation is one you cannot debug from the chair you are
+            # sitting in.
+            ankle = op.get("ankle")
+            if ankle is None or ankle.visibility < _MIN_VISIBILITY:
+                blocked = "can't see the operated ankle"
+                diagnostics["ankle"] = (
+                    f"{ankle.visibility:.2f} (need >={_MIN_VISIBILITY})"
+                    if ankle else "missing"
+                )
+            elif track.baseline_y is None:
+                blocked = "finding the floor -- hold still a moment"
+                diagnostics["floor samples"] = (
+                    f"{track.samples}/{_BASELINE_MIN_SAMPLES}"
+                )
+            else:
+                rise = (track.baseline_y - ankle.y) / max(height, 1)
+                diagnostics["ankle rise"] = f"{rise:+.3f} (need >={_LIFT_CLEARANCE})"
+                diagnostics["held"] = f"{track.consecutive}/{_SUSTAIN_FRAMES} frames"
+                if track.consecutive == 0:
+                    blocked = "lift the heel higher"
+                else:
+                    blocked = "keep holding"
 
             if operated_lifted:
                 self._done[SetupStep.HEEL_LIFT] = True
@@ -307,6 +357,8 @@ class SetupChecker:
             other_points,
             {n: op[n].visibility for n in ("shoulder", "hip", "knee", "ankle") if n in op},
             hold,
+            diagnostics,
+            blocked,
         )
 
     def _track(self, side: Side, points: dict[str, JointPoint], clearance: float) -> bool:
@@ -317,7 +369,8 @@ class SetupChecker:
             return False
         return self._tracks[side].observe(ankle.y, clearance)
 
-    def _state(self, detected, operated_points, other_points, visibility, hold) -> SetupState:
+    def _state(self, detected, operated_points, other_points, visibility, hold,
+               diagnostics=None, blocked=None) -> SetupState:
         return SetupState(
             person_detected=detected,
             steps_done=dict(self._done),
@@ -327,6 +380,8 @@ class SetupChecker:
             other_points=other_points,
             clinical_visibility=visibility,
             hold_progress=hold,
+            diagnostics=diagnostics or {},
+            blocked_reason=blocked,
         )
 
 
@@ -336,7 +391,17 @@ def _mean_visibility(points: dict[str, JointPoint], names: tuple[str, ...]) -> f
 
 
 def _next_step(done: dict[SetupStep, bool]) -> SetupStep | None:
-    for step in STEP_ORDER:
+    """The step to instruct on.
+
+    Advisory steps are surfaced while unmet, but once a person is in frame
+    the heel lift is always reachable -- it is never withheld because an
+    advisory heuristic has not tripped.
+    """
+    if not done[SetupStep.IN_FRAME]:
+        return SetupStep.IN_FRAME
+    if done[SetupStep.HEEL_LIFT]:
+        return None
+    for step in (SetupStep.SIDE_ON, SetupStep.OPERATED_NEAR):
         if not done[step]:
             return step
-    return None
+    return SetupStep.HEEL_LIFT

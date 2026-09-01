@@ -358,6 +358,8 @@ class LiveCheckView(QWidget):
             self._draw_skeleton(p, scaled)
             self._draw_instruction(p)
             self._draw_steps(p)
+            self._draw_blocked_reason(p)
+            self._draw_hold_ring(p)
             self._draw_verdict(p)
             if self._show_telemetry:
                 self._draw_telemetry(p)
@@ -424,6 +426,44 @@ class LiveCheckView(QWidget):
         p.drawText(2, 30, self.width(), 44, Qt.AlignmentFlag.AlignHCenter, text)
         p.setPen(QColor("#FFFFFF"))
         p.drawText(0, 28, self.width(), 44, Qt.AlignmentFlag.AlignHCenter, text)
+
+    def _draw_blocked_reason(self, p: QPainter) -> None:
+        """Why it has not passed yet, in plain words.
+
+        The previous build could stall with nothing on screen explaining it --
+        a check you cannot debug from the chair you are sitting in.
+        """
+        state = self._state
+        assert state is not None
+        if not state.blocked_reason or state.verdict is not SetupVerdict.WAITING:
+            return
+
+        font = QFont(self.font())
+        font.setPointSizeF(11)
+        p.setFont(font)
+        p.setPen(QColor(0, 0, 0, 160))
+        p.drawText(1, 105, self.width(), 26,
+                   Qt.AlignmentFlag.AlignHCenter, state.blocked_reason)
+        p.setPen(QColor(255, 255, 255, 210))
+        p.drawText(0, 104, self.width(), 26,
+                   Qt.AlignmentFlag.AlignHCenter, state.blocked_reason)
+
+    def _draw_hold_ring(self, p: QPainter) -> None:
+        """A ring that fills as the hold accumulates, so the sustain
+        requirement is visible rather than a silent timer."""
+        state = self._state
+        assert state is not None
+        if state.hold_progress <= 0.0 or state.verdict is not SetupVerdict.WAITING:
+            return
+
+        size, margin = 54, 26
+        x = self.width() - size - margin
+        y = self.height() - size - margin
+
+        p.setPen(QPen(QColor(255, 255, 255, 70), 5))
+        p.drawArc(x, y, size, size, 0, 360 * 16)
+        p.setPen(QPen(_MARKER, 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(x, y, size, size, 90 * 16, int(-360 * 16 * state.hold_progress))
 
     def _draw_steps(self, p: QPainter) -> None:
         state = self._state
@@ -507,6 +547,19 @@ class LiveCheckView(QWidget):
             # threshold tick at the good/degraded boundary
             p.setBrush(QColor("#FFFFFF"))
             p.drawRect(int(bar_x + bar_w * 0.65), top + 2, 1, 8)
+
+        # measured values against their thresholds, so a stall is diagnosable
+        if state.diagnostics:
+            dy = y + h + 8
+            dh = 16 * (len(state.diagnostics) + 1)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 185))
+            p.drawRoundedRect(x, dy, w, dh, 5, 5)
+            p.setPen(QColor(INK_SOFT))
+            p.drawText(x + 12, dy + 15, "GATE")
+            for i, (key, value) in enumerate(state.diagnostics.items()):
+                p.setPen(QColor("#A9BBC0"))
+                p.drawText(x + 12, dy + 15 + 16 * (i + 1), f"{key[:10]:<11}{value}")
 
     def _centred(self, p: QPainter, text: str, size: float, colour: QColor) -> None:
         font = QFont(self.font())

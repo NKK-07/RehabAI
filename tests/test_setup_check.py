@@ -282,11 +282,56 @@ def test_a_foot_left_on_the_floor_never_passes():
     assert state.verdict is SetupVerdict.WAITING
 
 
-def test_the_lift_is_not_evaluated_before_framing_is_right():
-    """Lifting a heel while face-on proves nothing about which leg the camera
-    can see, so the step is not evaluated yet."""
+def test_the_lift_is_evaluated_even_when_framing_is_imperfect():
+    """The binding test does not need side-on framing, and must not wait for it.
+
+    Two different questions were being conflated. Side-on framing is required
+    for the SESSION, because hip and knee angles need a profile view. It is not
+    required to prove the BINDING -- if the left ankle rises when you lift your
+    left heel, the labels are correct whichever way you are facing.
+
+    The earlier version gated the lift behind the framing heuristics, which are
+    unreliable by construction (they read visibility values the model infers for
+    occluded joints). A correctly seated person could sit there indefinitely
+    while the one rigorous check never ran.
+    """
     state = run(settled(side_on=False) + held(side_on=False, lift_side=Side.LEFT))
+
+    assert state.verdict is SetupVerdict.PASSED
+    # ...while still reporting that the framing itself is not right yet.
+    assert not state.steps_done[SetupStep.SIDE_ON]
+
+
+def test_a_stalled_check_says_why():
+    """A gate that stalls with no explanation cannot be debugged from the chair
+    you are sitting in. This is what the previous run hit: closed with no
+    verdict and nothing on screen about the reason."""
+    state = run(settled())
+
     assert state.verdict is SetupVerdict.WAITING
+    assert state.blocked_reason, "no reason given for not passing"
+    assert state.diagnostics, "no live values to diagnose from"
+
+
+def test_the_diagnostics_report_the_measured_values_against_thresholds():
+    state = run(settled())
+    joined = " ".join(f"{k} {v}" for k, v in state.diagnostics.items())
+
+    assert "shoulder spread" in state.diagnostics
+    assert "near-side margin" in state.diagnostics
+    assert "need" in joined or "want" in joined, "thresholds not shown alongside values"
+
+
+def test_an_unseen_ankle_is_named_as_the_blocker():
+    marks = _SKELETON_LANDMARKS[Side.LEFT]
+    frames = []
+    for _ in range(_BASELINE_WINDOW):
+        landmarks = pose()
+        landmarks.landmark[int(marks["ankle"])].visibility = 0.05
+        frames.append(landmarks)
+
+    state = run(frames)
+    assert "ankle" in (state.blocked_reason or "")
 
 
 def test_the_floor_baseline_self_corrects_from_a_raised_start():
