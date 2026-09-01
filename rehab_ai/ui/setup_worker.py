@@ -24,7 +24,7 @@ from PySide6.QtGui import QImage
 from rehab_ai.camera.capture import CameraError, CameraSource
 from rehab_ai.camera.renderer import to_qimage_bytes
 from rehab_ai.models.session import Side
-from rehab_ai.pose.setup_check import SetupState, evaluate
+from rehab_ai.pose.setup_check import SetupChecker
 from rehab_ai.pose_utils import PoseTracker
 from rehab_ai.rules.loader import Rules
 
@@ -40,7 +40,7 @@ class SetupWorker(QObject):
         self._rules = rules
         self._device_index = device_index
         self._running = False
-        self._state: SetupState | None = None
+        self._checker = SetupChecker(operated)
 
     def stop(self) -> None:
         self._running = False
@@ -58,17 +58,13 @@ class SetupWorker(QObject):
                     # frame handed to the view must be the same one -- otherwise
                     # every marker lands at a flipped x and the overlay looks
                     # broken even when the binding is correct.
-                    self._state = evaluate(
-                        result.pose_landmarks,
-                        self._operated,
-                        frame.width,
-                        frame.height,
-                        previous=self._state,
+                    state = self._checker.update(
+                        result.pose_landmarks, frame.width, frame.height
                     )
 
                     data, w, h, stride = to_qimage_bytes(frame.for_inference)
                     image = QImage(data, w, h, stride, QImage.Format.Format_RGB888).copy()
-                    self.frame_ready.emit(image, self._state)
+                    self.frame_ready.emit(image, state)
         except CameraError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001

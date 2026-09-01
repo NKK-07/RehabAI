@@ -1,42 +1,57 @@
 """
 setup_check.py
-Verifies the camera setup before a session, and proves the operated-side
-binding is correct.
+Verifies the camera setup, and proves the operated-side binding on the
+landmarks the product actually measures.
 
-WHY THE APP SHOULD CHECK THIS ITSELF
+WHY A HEEL LIFT AND NOT AN ARM RAISE
 ====================================
-The old check asked the patient to raise an arm and then eyeball whether the
-right marker moved. But the app tracked only shoulder, hip, knee and ankle --
-no elbow, no wrist -- so it had no idea whether the arm went up. The person
-being tested was also the instrument.
+The first version asked for an arm raise. That proved something true but
+indirect: it tested `wrist` and `shoulder` to infer a binding that matters for
+`hip`, `knee` and `ankle`. The inference is sound -- the pose model assigns
+left and right consistently across every landmark -- but it left the joints the
+hip-drive ratio is built from untested.
 
-With the wrist tracked, the app can confirm its own binding:
+A heel lift exercises `ankle` directly. That is a CLINICAL landmark: the same
+point the knee angle is computed from, on the same leg the whole product is
+about. If the app sees the operated ankle rise when you lift that heel, the
+binding is proven on the chain that carries the measurement.
 
-    "raise your LEFT arm"
+WHY SUSTAINED, NOT A SINGLE FRAME
+=================================
+The pose model estimates occluded joints rather than declining to answer, and
+in profile the far leg is occluded by the near one. Those estimates move. A
+check that latches PASSED on one frame is a check a single jitter can fake --
+and it latches permanently, so the noise only has to win once.
+
+So a lift must hold for `_SUSTAIN_FRAMES` consecutive frames, clearing the
+floor by a margin larger than the jitter.
+
+    baseline = lowest ankle position seen so far   (the floor)
+    lift     = ankle above baseline by _LIFT_CLEARANCE
+    pass     = lift held for _SUSTAIN_FRAMES in a row
+
+The baseline is a running maximum rather than a one-off sample, so it
+self-corrects: a patient who starts with the foot already raised sets a wrong
+baseline, then lowers the foot, and the baseline drops to the real floor.
+
+    "raise your operated heel"
               │
               ▼
-    left wrist rises above left shoulder     -> binding correct
-    right wrist rises instead                -> LEFT AND RIGHT ARE SWAPPED
-    neither                                  -> still waiting
+    operated ankle rises, held    -> binding correct
+    other ankle rises instead     -> LEFT AND RIGHT ARE SWAPPED
+    neither, or only a flicker    -> still waiting
 
-That last distinction is the whole point. A swap is otherwise invisible: from
-inside the code the labels are self-consistent, they are just attached to the
-wrong body.
-
-THE FOUR STEPS
-==============
-Each is a condition the app can observe, so the sequence advances on its own
-rather than asking the patient to decide when they have complied.
-
-    1 IN_FRAME       a person is detected at all
-    2 SIDE_ON        shoulders are close together horizontally (profile view)
-    3 OPERATED_NEAR  the operated side is the more visible one
-    4 ARM_RAISED     the operated-side wrist goes above its shoulder
+WHAT THIS STILL DOES NOT PROVE
+==============================
+Steps 2 and 3 (side-on, operated leg nearest) rest on visibility values the
+model infers for occluded joints. They are framing guidance, not measurements,
+and they can pass for the wrong reason. Step 4 is the load-bearing one, and it
+is the only step whose verdict is recorded.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from rehab_ai.models.session import Side
@@ -47,26 +62,26 @@ LM = PoseLandmark
 
 
 class SetupStep(str, Enum):
-    """Ordered. Each one only becomes checkable once the previous holds."""
+    """Ordered. Each only becomes checkable once the previous holds."""
 
     IN_FRAME = "in_frame"
     SIDE_ON = "side_on"
     OPERATED_NEAR = "operated_near"
-    ARM_RAISED = "arm_raised"
+    HEEL_LIFT = "heel_lift"
 
 
 STEP_ORDER = (
     SetupStep.IN_FRAME,
     SetupStep.SIDE_ON,
     SetupStep.OPERATED_NEAR,
-    SetupStep.ARM_RAISED,
+    SetupStep.HEEL_LIFT,
 )
 
 STEP_TEXT = {
     SetupStep.IN_FRAME: "Step into view",
     SetupStep.SIDE_ON: "Turn side-on to the camera",
     SetupStep.OPERATED_NEAR: "Put your {side} leg nearest the camera",
-    SetupStep.ARM_RAISED: "Raise your {side} arm",
+    SetupStep.HEEL_LIFT: "Lift your {side} heel, and hold it",
 }
 
 
@@ -78,8 +93,6 @@ class SetupVerdict(str, Enum):
 
 @dataclass(frozen=True)
 class JointPoint:
-    """One landmark, ready to draw."""
-
     name: str
     x: float
     y: float
@@ -97,6 +110,7 @@ class SetupState:
     operated_points: list[JointPoint]
     other_points: list[JointPoint]
     clinical_visibility: dict[str, float]
+    hold_progress: float = 0.0  # 0..1 through the sustained hold
 
     @property
     def progress(self) -> tuple[int, int]:
@@ -106,27 +120,69 @@ class SetupState:
         if self.verdict is SetupVerdict.PASSED:
             return "All set"
         if self.verdict is SetupVerdict.SIDES_SWAPPED:
-            return "Wrong side moved"
+            return "The other leg moved"
         if self.current_step is None:
             return "All set"
         return STEP_TEXT[self.current_step].format(side=operated.value)
 
 
 # ---------------------------------------------------------------------------
-# thresholds -- deliberately generous; this is framing guidance, not a
-# clinical measurement, and a strict gate here just annoys people
+# thresholds
 # ---------------------------------------------------------------------------
 
 _MIN_VISIBILITY = 0.4
-# Side-on: in a profile view the two shoulders sit almost on top of each other
-# horizontally. Face-on they are far apart. Measured as a fraction of frame
-# width so it holds at any resolution.
+
+# Framing guidance, deliberately generous -- a strict gate here just annoys
+# people, and neither of these steps is what the verdict rests on.
 _SIDE_ON_MAX_SHOULDER_SPREAD = 0.14
-# The near side reads meaningfully more visible than the far one.
 _NEAR_SIDE_MARGIN = 0.08
-# The wrist must clear the shoulder by this fraction of frame height, so a
-# hand resting on a lap never counts.
-_ARM_RAISE_CLEARANCE = 0.04
+
+# The load-bearing numbers. Clearance is a fraction of frame height; sustain is
+# frames at roughly 25fps, so 10 frames is about 0.4s -- long enough that pose
+# jitter cannot hold it, short enough not to tire a post-op patient.
+_LIFT_CLEARANCE = 0.05
+_SUSTAIN_FRAMES = 10
+_BASELINE_MIN_SAMPLES = 8
+
+
+@dataclass
+class _SideTrack:
+    """Per-side lift tracking: where the floor is, and how long a lift held."""
+
+    baseline_y: float | None = None
+    samples: int = 0
+    consecutive: int = 0
+
+    def observe(self, y: float, clearance: float) -> bool:
+        """Feed one ankle position. Returns True once a lift has been sustained.
+
+        `baseline_y` is a running MAXIMUM (screen y grows downward, so the
+        largest y is the lowest point, which is the floor). Running rather than
+        sampled once, so a patient who starts with the foot up sets a wrong
+        baseline, lowers the foot, and the baseline corrects itself.
+        """
+        if self.baseline_y is None or y > self.baseline_y:
+            self.baseline_y = y
+        self.samples += 1
+
+        if self.samples < _BASELINE_MIN_SAMPLES:
+            return False  # not enough evidence about where the floor is
+
+        if y < self.baseline_y - clearance:
+            self.consecutive += 1
+        else:
+            self.consecutive = 0
+
+        return self.consecutive >= _SUSTAIN_FRAMES
+
+    @property
+    def hold_progress(self) -> float:
+        return min(1.0, self.consecutive / _SUSTAIN_FRAMES)
+
+    def reset(self) -> None:
+        self.baseline_y = None
+        self.samples = 0
+        self.consecutive = 0
 
 
 def _points(landmarks, side: Side, width: int, height: int) -> list[JointPoint]:
@@ -145,8 +201,8 @@ def bones_for(points: list[JointPoint]) -> list[tuple[JointPoint, JointPoint]]:
     """Connected segments, skipping any whose endpoints are not both visible.
 
     Drawing a bone to a landmark the model is guessing at produces a limb that
-    swings around the screen, which reads as the tracker being broken rather
-    than as low confidence.
+    swings around the screen, which reads as a broken tracker rather than as
+    low confidence.
     """
     lookup = _by_name(points)
     segments = []
@@ -157,90 +213,95 @@ def bones_for(points: list[JointPoint]) -> list[tuple[JointPoint, JointPoint]]:
     return segments
 
 
-def evaluate(
-    landmarks,
-    operated: Side,
-    width: int,
-    height: int,
-    *,
-    previous: SetupState | None = None,
-) -> SetupState:
-    """Assess one frame against the four setup steps.
+class SetupChecker:
+    """Stateful across frames: latched steps, per-side floor baselines, holds.
 
-    Steps latch once satisfied (via `previous`) so a momentary wobble does not
-    reset the sequence and send the patient back to step one.
+    A class rather than threading `previous` through a free function, because
+    the lift check genuinely needs memory -- where the floor is, and how many
+    consecutive frames the foot has been off it.
     """
-    done = dict(previous.steps_done) if previous else {s: False for s in STEP_ORDER}
-    verdict = previous.verdict if previous else SetupVerdict.WAITING
 
-    if landmarks is None:
-        return SetupState(
-            person_detected=False,
-            steps_done=done,
-            current_step=_next_step(done),
-            verdict=verdict,
-            operated_points=[],
-            other_points=[],
-            clinical_visibility={},
+    def __init__(self, operated: Side) -> None:
+        self.operated = operated
+        self._done = {step: False for step in STEP_ORDER}
+        self._verdict = SetupVerdict.WAITING
+        self._tracks = {operated: _SideTrack(), operated.other: _SideTrack()}
+
+    def reset(self) -> None:
+        self._done = {step: False for step in STEP_ORDER}
+        self._verdict = SetupVerdict.WAITING
+        for track in self._tracks.values():
+            track.reset()
+
+    def update(self, landmarks, width: int, height: int) -> SetupState:
+        if landmarks is None:
+            return self._state(False, [], [], {}, 0.0)
+
+        operated_points = _points(landmarks, self.operated, width, height)
+        other_points = _points(landmarks, self.operated.other, width, height)
+        op = _by_name(operated_points)
+        ot = _by_name(other_points)
+
+        self._done[SetupStep.IN_FRAME] = True
+
+        # -- side-on: the two shoulders nearly overlap horizontally ----------
+        if op.get("shoulder") and ot.get("shoulder"):
+            spread = abs(op["shoulder"].x - ot["shoulder"].x) / max(width, 1)
+            if spread <= _SIDE_ON_MAX_SHOULDER_SPREAD:
+                self._done[SetupStep.SIDE_ON] = True
+
+        # -- operated side is the near one -----------------------------------
+        if self._done[SetupStep.SIDE_ON]:
+            joints = ("shoulder", "hip", "knee", "ankle")
+            if _mean_visibility(op, joints) >= _mean_visibility(ot, joints) + _NEAR_SIDE_MARGIN:
+                self._done[SetupStep.OPERATED_NEAR] = True
+
+        # -- the heel lift, which proves the binding on a clinical landmark --
+        hold = 0.0
+        if self._done[SetupStep.OPERATED_NEAR] and self._verdict is SetupVerdict.WAITING:
+            clearance = _LIFT_CLEARANCE * height
+
+            operated_lifted = self._track(self.operated, op, clearance)
+            other_lifted = self._track(self.operated.other, ot, clearance)
+            hold = self._tracks[self.operated].hold_progress
+
+            if operated_lifted:
+                self._done[SetupStep.HEEL_LIFT] = True
+                self._verdict = SetupVerdict.PASSED
+            elif other_lifted:
+                # The patient lifted the heel they were told to. If the OTHER
+                # ankle is what the model saw rise, the labels are attached to
+                # the wrong body -- and every hip and knee angle this session
+                # records would describe the healthy leg.
+                self._verdict = SetupVerdict.SIDES_SWAPPED
+
+        return self._state(
+            True,
+            operated_points,
+            other_points,
+            {n: op[n].visibility for n in ("shoulder", "hip", "knee", "ankle") if n in op},
+            hold,
         )
 
-    operated_points = _points(landmarks, operated, width, height)
-    other_points = _points(landmarks, operated.other, width, height)
-    op = _by_name(operated_points)
-    ot = _by_name(other_points)
+    def _track(self, side: Side, points: dict[str, JointPoint], clearance: float) -> bool:
+        ankle = points.get("ankle")
+        if ankle is None or ankle.visibility < _MIN_VISIBILITY:
+            # Cannot see the ankle, so cannot claim it moved OR that it did not.
+            self._tracks[side].consecutive = 0
+            return False
+        return self._tracks[side].observe(ankle.y, clearance)
 
-    done[SetupStep.IN_FRAME] = True
-
-    # -- side-on: shoulders nearly overlap horizontally ---------------------
-    if op.get("shoulder") and ot.get("shoulder"):
-        spread = abs(op["shoulder"].x - ot["shoulder"].x) / max(width, 1)
-        if spread <= _SIDE_ON_MAX_SHOULDER_SPREAD:
-            done[SetupStep.SIDE_ON] = True
-
-    # -- operated side is the near one --------------------------------------
-    if done[SetupStep.SIDE_ON]:
-        op_vis = _mean_visibility(op, ("shoulder", "hip", "knee", "ankle"))
-        ot_vis = _mean_visibility(ot, ("shoulder", "hip", "knee", "ankle"))
-        if op_vis >= ot_vis + _NEAR_SIDE_MARGIN:
-            done[SetupStep.OPERATED_NEAR] = True
-
-    # -- the arm raise, which is what actually proves the binding ------------
-    if done[SetupStep.OPERATED_NEAR] and verdict is SetupVerdict.WAITING:
-        clearance = _ARM_RAISE_CLEARANCE * height
-        operated_raised = _wrist_above_shoulder(op, clearance)
-        other_raised = _wrist_above_shoulder(ot, clearance)
-
-        if operated_raised:
-            done[SetupStep.ARM_RAISED] = True
-            verdict = SetupVerdict.PASSED
-        elif other_raised:
-            # The patient did as asked. If the OTHER side's wrist is what the
-            # model saw rise, the labels are attached to the wrong body.
-            verdict = SetupVerdict.SIDES_SWAPPED
-
-    return SetupState(
-        person_detected=True,
-        steps_done=done,
-        current_step=_next_step(done),
-        verdict=verdict,
-        operated_points=operated_points,
-        other_points=other_points,
-        clinical_visibility={
-            name: op[name].visibility
-            for name in ("shoulder", "hip", "knee", "ankle")
-            if name in op
-        },
-    )
-
-
-def _wrist_above_shoulder(side_points: dict[str, JointPoint], clearance: float) -> bool:
-    """Screen y grows downward, so 'above' means a smaller y."""
-    wrist, shoulder = side_points.get("wrist"), side_points.get("shoulder")
-    if not wrist or not shoulder:
-        return False
-    if wrist.visibility < _MIN_VISIBILITY or shoulder.visibility < _MIN_VISIBILITY:
-        return False
-    return wrist.y < shoulder.y - clearance
+    def _state(self, detected, operated_points, other_points, visibility, hold) -> SetupState:
+        return SetupState(
+            person_detected=detected,
+            steps_done=dict(self._done),
+            current_step=_next_step(self._done),
+            verdict=self._verdict,
+            operated_points=operated_points,
+            other_points=other_points,
+            clinical_visibility=visibility,
+            hold_progress=hold,
+        )
 
 
 def _mean_visibility(points: dict[str, JointPoint], names: tuple[str, ...]) -> float:

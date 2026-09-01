@@ -75,8 +75,8 @@ class HowToAnimation(QWidget):
     BEATS = (
         ("Sit side-on to the camera", "Turn so the camera sees your profile"),
         ("Operated leg nearest", "The camera can only watch the near leg"),
-        ("Raise that arm", "So we can prove we're watching the right side"),
-        ("We confirm it", "The markers on that side light up"),
+        ("Lift that heel, and hold", "Keep it up for about half a second"),
+        ("We confirm it", "The ankle marker rises, and we know it's your leg"),
     )
     BEAT_MS = 3600
 
@@ -125,17 +125,20 @@ class HowToAnimation(QWidget):
         # Beat 0 shows the figure rotating from face-on to profile; after that
         # it stays side-on.
         turn = 1.0 - min(1.0, progress * 2.2) if beat == 0 else 0.0
-        # Beat 2 raises the arm, beat 3 holds it up.
+        # Beat 2 lifts the heel, beat 3 holds it up. The arm stays down --
+        # the check no longer uses it, and showing an arm raise here would
+        # teach the wrong movement.
         if beat == 2:
-            arm = min(1.0, progress * 2.4)
+            lift = min(1.0, progress * 2.4)
         elif beat == 3:
-            arm = 1.0
+            lift = 1.0
         else:
-            arm = 0.0
+            lift = 0.0
+        arm = 0.0
         highlight = beat >= 1
         pulse = beat == 3
 
-        self._draw_figure(painter, cx, cy, scale, turn=turn, arm=arm,
+        self._draw_figure(painter, cx, cy, scale, turn=turn, arm=arm, lift=lift,
                           highlight=highlight, pulse=pulse, progress=progress)
         self._draw_caption(painter, w, h, beat)
         self._draw_beat_dots(painter, w, h, beat)
@@ -155,7 +158,8 @@ class HowToAnimation(QWidget):
 
     def _draw_figure(
         self, p: QPainter, cx: float, cy: float, s: float, *,
-        turn: float, arm: float, highlight: bool, pulse: bool, progress: float,
+        turn: float, arm: float, lift: float, highlight: bool, pulse: bool,
+        progress: float,
     ) -> None:
         """Side-view seated figure. `turn` 1.0 = facing camera, 0.0 = profile."""
         # Facing the camera, the two sides separate horizontally; in profile
@@ -165,7 +169,9 @@ class HowToAnimation(QWidget):
 
         hip = (cx - 18 * s, cy + 16 * s)
         knee = (cx + 22 * s, cy + 22 * s)
-        ankle = (cx + 26 * s, cy + 62 * s)
+        # The heel lift: the ankle rises and the knee straightens slightly,
+        # which is what the live check measures on the real ankle landmark.
+        ankle = (cx + 26 * s, cy + 62 * s - 26 * s * lift)
         shoulder = (cx - 26 * s, cy - 34 * s)
         head = (cx - 30 * s, cy - 56 * s)
 

@@ -1,27 +1,33 @@
 """
 Tests for the camera setup check (CP 3, automated).
 
-The point of this module is that the APP verifies its own operated-side
-binding, instead of asking the patient to eyeball whether the right marker
-moved. That only became possible once the wrist was tracked -- with four
-landmarks the app had no idea whether an arm went up.
+The APP verifies its own operated-side binding, rather than asking the patient
+to eyeball whether the right marker moved.
 
-The case that matters most is test_the_wrong_wrist_rising_reports_a_swap:
-the patient does exactly as asked, and if the OTHER side's wrist is what the
-model saw rise, left and right are attached to the wrong body. Nothing else in
-the test suite can catch that, because from inside the code the labels are
-self-consistent.
+The gate is a HEEL LIFT, not an arm raise, and that choice is the point. A heel
+lift moves `ankle` -- a CLINICAL landmark, the same point the knee angle is
+computed from. An arm raise would prove the binding on `wrist`, a landmark the
+product never measures, leaving the measured chain untested.
+
+It must also be SUSTAINED. The pose model estimates occluded joints rather than
+declining to answer, so a single-frame check is one a jitter can fake -- and it
+latches permanently, so the noise only has to win once.
+
+Two tests carry the weight:
+  * test_a_single_lifted_frame_does_not_pass    (the jitter defence)
+  * test_the_wrong_ankle_rising_reports_a_swap  (the mirroring defence)
 """
 
 import pytest
 
 from rehab_ai.models.session import Side
 from rehab_ai.pose.setup_check import (
+    _SUSTAIN_FRAMES,
     STEP_ORDER,
+    SetupChecker,
     SetupStep,
     SetupVerdict,
     bones_for,
-    evaluate,
 )
 from rehab_ai.pose.tracker import _CLINICAL_LANDMARKS, _SKELETON_LANDMARKS
 
@@ -53,7 +59,7 @@ def pose(
     operated: Side = Side.LEFT,
     side_on: bool = True,
     operated_near: bool = True,
-    raise_side: Side | None = None,
+    lift_side: Side | None = None,
 ) -> _Landmarks:
     """Build a landmark set with the properties each test needs.
 
@@ -71,28 +77,40 @@ def pose(
     mapping = {}
     for side, vis, dx in ((near, near_vis, 0.0), (far, far_vis, offset)):
         marks = _SKELETON_LANDMARKS[side]
-        raised = raise_side is side
+        lifted = lift_side is side
         mapping.update({
             marks["ear"]: (0.44 + dx, 0.16, vis),
             marks["shoulder"]: (0.46 + dx, 0.30, vis),
             marks["elbow"]: (0.44 + dx, 0.44, vis),
             # A raised wrist clears the shoulder; a resting one sits well below.
-            marks["wrist"]: (0.42 + dx, 0.12 if raised else 0.56, vis),
+            marks["wrist"]: (0.42 + dx, 0.56, vis),
             marks["hip"]: (0.48 + dx, 0.58, vis),
             marks["knee"]: (0.58 + dx, 0.72, vis),
-            marks["ankle"]: (0.60 + dx, 0.90, vis),
-            marks["heel"]: (0.58 + dx, 0.93, vis),
-            marks["toe"]: (0.66 + dx, 0.93, vis),
+            # Screen y grows downward: a lifted ankle sits HIGHER, so smaller y.
+            marks["ankle"]: (0.60 + dx, 0.78 if lifted else 0.90, vis),
+            marks["heel"]: (0.58 + dx, 0.81 if lifted else 0.93, vis),
+            marks["toe"]: (0.66 + dx, 0.81 if lifted else 0.93, vis),
         })
     return _Landmarks(mapping)
 
 
-def run(sequence, operated: Side = Side.LEFT):
-    """Feed frames in order, carrying state forward the way the view does."""
+def run(sequence, operated: Side = Side.LEFT, checker: SetupChecker | None = None):
+    """Feed frames in order through a stateful checker."""
+    checker = checker or SetupChecker(operated)
     state = None
     for landmarks in sequence:
-        state = evaluate(landmarks, operated, W, H, previous=state)
+        state = checker.update(landmarks, W, H)
     return state
+
+
+def settled(**kw):
+    """Enough identical frames for the floor baseline to be established."""
+    return [pose(**kw)] * 12
+
+
+def held(frames: int = _SUSTAIN_FRAMES + 2, **kw):
+    """A lift held long enough to satisfy the sustain requirement."""
+    return [pose(**kw)] * frames
 
 
 # --------------------------------------------------------------------------
@@ -154,7 +172,7 @@ def test_a_hidden_wrist_does_not_make_a_visible_knee_unobservable():
 
 
 def test_no_person_detected_reports_nothing_done():
-    state = evaluate(None, Side.LEFT, W, H)
+    state = SetupChecker(Side.LEFT).update(None, W, H)
     assert not state.person_detected
     assert state.current_step is SetupStep.IN_FRAME
     assert state.progress == (0, 4)
@@ -190,62 +208,114 @@ def test_the_wrong_leg_nearest_holds_at_step_three():
 def test_the_operated_leg_nearest_clears_the_third_step():
     state = run([pose(side_on=True, operated_near=True)])
     assert state.steps_done[SetupStep.OPERATED_NEAR]
-    assert state.current_step is SetupStep.ARM_RAISED
+    assert state.current_step is SetupStep.HEEL_LIFT
 
 
 # --------------------------------------------------------------------------
-# The arm raise -- what actually proves the binding
+# The heel lift -- what proves the binding, on a landmark we actually measure
 # --------------------------------------------------------------------------
 
 
-def test_raising_the_operated_arm_passes_the_check():
-    state = run([pose(), pose(raise_side=Side.LEFT)], operated=Side.LEFT)
+def test_a_sustained_lift_of_the_operated_heel_passes():
+    state = run(settled() + held(lift_side=Side.LEFT), operated=Side.LEFT)
 
     assert state.verdict is SetupVerdict.PASSED
-    assert state.steps_done[SetupStep.ARM_RAISED]
+    assert state.steps_done[SetupStep.HEEL_LIFT]
     assert state.progress == (4, 4)
 
 
-def test_the_wrong_wrist_rising_reports_a_swap():
-    """THE case this whole module exists for.
+def test_a_single_lifted_frame_does_not_pass():
+    """THE jitter defence, and the answer to "does lifting once pass it?"
 
-    The patient raised the arm they were told to. If the model reports the
-    OTHER side's wrist as the one that rose, the labels are attached to the
-    wrong body -- and every downstream number would describe the healthy knee.
+    One frame where the ankle estimate wobbles upward must not latch a
+    permanent PASSED. The model guesses occluded joints, and in profile the far
+    leg is occluded, so those guesses move on their own.
     """
-    state = run([pose(), pose(raise_side=Side.RIGHT)], operated=Side.LEFT)
+    state = run(settled() + [pose(lift_side=Side.LEFT)], operated=Side.LEFT)
+
+    assert state.verdict is SetupVerdict.WAITING
+    assert not state.steps_done[SetupStep.HEEL_LIFT]
+
+
+def test_a_lift_shorter_than_the_sustain_window_does_not_pass():
+    state = run(settled() + held(_SUSTAIN_FRAMES - 2, lift_side=Side.LEFT))
+    assert state.verdict is SetupVerdict.WAITING
+
+
+def test_a_lift_that_flickers_restarts_the_count():
+    """Up, down, up must not sum to a sustained hold, or noise accumulates
+    into a pass given enough frames."""
+    frames = settled()
+    frames += held(_SUSTAIN_FRAMES - 2, lift_side=Side.LEFT)
+    frames += [pose()]
+    frames += held(_SUSTAIN_FRAMES - 2, lift_side=Side.LEFT)
+
+    assert run(frames).verdict is SetupVerdict.WAITING
+
+
+def test_the_hold_progress_is_reported_so_the_screen_can_show_it():
+    state = run(settled() + held(_SUSTAIN_FRAMES // 2, lift_side=Side.LEFT))
+    assert 0.0 < state.hold_progress < 1.0
+
+
+def test_the_wrong_ankle_rising_reports_a_swap():
+    """THE mirroring defence.
+
+    The patient lifted the heel they were told to. If the OTHER ankle is what
+    the model saw rise, the labels are attached to the wrong body -- and every
+    hip and knee angle this session records would describe the healthy leg.
+    """
+    state = run(settled() + held(lift_side=Side.RIGHT), operated=Side.LEFT)
 
     assert state.verdict is SetupVerdict.SIDES_SWAPPED
-    assert not state.steps_done[SetupStep.ARM_RAISED]
+    assert not state.steps_done[SetupStep.HEEL_LIFT]
 
 
-def test_a_resting_hand_never_counts_as_raised():
-    """A wrist on a lap sits below the shoulder. Without the clearance margin,
-    noise around a shoulder-height hand would pass the check."""
-    state = run([pose(), pose(raise_side=None)])
+def test_a_foot_left_on_the_floor_never_passes():
+    state = run(settled() + held(lift_side=None))
     assert state.verdict is SetupVerdict.WAITING
 
 
-def test_the_arm_raise_is_not_checked_before_framing_is_right():
-    """Raising an arm while face-on proves nothing about which leg the camera
-    can see, so the step is not even evaluated yet."""
-    state = run([pose(side_on=False, raise_side=Side.LEFT)])
+def test_the_lift_is_not_evaluated_before_framing_is_right():
+    """Lifting a heel while face-on proves nothing about which leg the camera
+    can see, so the step is not evaluated yet."""
+    state = run(settled(side_on=False) + held(side_on=False, lift_side=Side.LEFT))
     assert state.verdict is SetupVerdict.WAITING
-    assert not state.steps_done[SetupStep.ARM_RAISED]
+
+
+def test_the_floor_baseline_self_corrects_from_a_raised_start():
+    """A patient who begins with the foot already up sets a wrong baseline.
+    Lowering it must correct that, or the check would be permanently stuck."""
+    frames = settled(lift_side=Side.LEFT)
+    frames += settled()
+    frames += held(lift_side=Side.LEFT)
+
+    assert run(frames).verdict is SetupVerdict.PASSED
+
+
+def test_an_invisible_ankle_cannot_pass_or_fail_the_lift():
+    """If the ankle cannot be seen, the app can claim neither that it moved nor
+    that it did not."""
+    marks = _SKELETON_LANDMARKS[Side.LEFT]
+    frames = settled()
+    for _ in range(_SUSTAIN_FRAMES + 4):
+        landmarks = pose(lift_side=Side.LEFT)
+        landmarks.landmark[int(marks["ankle"])].visibility = 0.05
+        frames.append(landmarks)
+
+    assert run(frames).verdict is SetupVerdict.WAITING
 
 
 def test_a_verdict_is_not_revised_once_reached():
-    """A passed check stays passed. Otherwise lowering your arm would undo it
-    and the patient would be stuck repeating a step they completed."""
-    state = run([pose(), pose(raise_side=Side.LEFT), pose(raise_side=None)])
-    assert state.verdict is SetupVerdict.PASSED
+    """A passed check stays passed -- lowering the foot must not undo it."""
+    assert run(settled() + held(lift_side=Side.LEFT) + settled()).verdict is SetupVerdict.PASSED
 
 
 def test_a_swap_verdict_also_sticks():
     """Especially this one. A swap must not scroll past because the patient
-    put their arm down."""
-    state = run([pose(), pose(raise_side=Side.RIGHT), pose(raise_side=None)])
-    assert state.verdict is SetupVerdict.SIDES_SWAPPED
+    put their foot down."""
+    frames = settled() + held(lift_side=Side.RIGHT) + settled()
+    assert run(frames).verdict is SetupVerdict.SIDES_SWAPPED
 
 
 def test_steps_latch_through_a_momentary_wobble():
@@ -256,9 +326,19 @@ def test_steps_latch_through_a_momentary_wobble():
 
 
 def test_it_works_for_a_right_side_patient():
-    state = run([pose(operated=Side.RIGHT), pose(operated=Side.RIGHT, raise_side=Side.RIGHT)],
-                operated=Side.RIGHT)
-    assert state.verdict is SetupVerdict.PASSED
+    frames = settled(operated=Side.RIGHT) + held(operated=Side.RIGHT, lift_side=Side.RIGHT)
+    assert run(frames, operated=Side.RIGHT).verdict is SetupVerdict.PASSED
+
+
+def test_resetting_clears_everything_for_a_retry():
+    checker = SetupChecker(Side.LEFT)
+    run(settled() + held(lift_side=Side.RIGHT), checker=checker)
+    assert checker._verdict is SetupVerdict.SIDES_SWAPPED
+
+    checker.reset()
+    state = checker.update(pose(), W, H)
+    assert state.verdict is SetupVerdict.WAITING
+    assert not state.steps_done[SetupStep.HEEL_LIFT]
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +363,7 @@ def test_bones_skip_segments_with_an_invisible_endpoint():
 
 
 def test_a_full_skeleton_produces_every_bone():
-    from rehab_ai.pose.setup_check import _SKELETON_BONES, _points
+    from rehab_ai.pose.setup_check import _SKELETON_BONES
 
     state = run([pose()])
     assert len(bones_for(state.operated_points)) == len(_SKELETON_BONES)
@@ -314,5 +394,15 @@ def test_the_instruction_names_the_operated_side():
 
 
 def test_a_passed_check_stops_instructing():
-    state = run([pose(), pose(raise_side=Side.LEFT)])
+    state = run(settled() + held(lift_side=Side.LEFT))
     assert state.instruction(Side.LEFT) == "All set"
+
+
+def test_the_instruction_asks_for_a_hold_not_just_a_lift():
+    """The sustain requirement is part of the instruction, not a hidden rule
+    the patient fails without knowing why."""
+    from rehab_ai.pose.setup_check import STEP_TEXT
+
+    text = STEP_TEXT[SetupStep.HEEL_LIFT].lower()
+    assert "hold" in text
+    assert "heel" in text
