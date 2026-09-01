@@ -37,7 +37,7 @@ from rehab_ai.models.session import (
     SessionStatus,
     SwellingComparisonStatus,
 )
-from rehab_ai.rules.loader import ExplainRules, load_rules
+from rehab_ai.rules.loader import ExplainRules, PolicyRules, load_rules
 
 
 @pytest.fixture(scope="module")
@@ -89,21 +89,49 @@ def test_the_prompt_contains_the_decision_and_its_facts(rules):
     assert "already been made" in prompt
 
 
-def test_the_prompt_never_contains_raw_inputs_or_thresholds(rules):
+def test_the_prompt_never_contains_raw_inputs_or_thresholds():
     """The model is handed the verdict, not the evidence. It cannot second-guess
-    a decision whose inputs it was never shown."""
-    prompt = build_prompt(lock(ReasonCode.PAIN_ELEVATED), rules.policy)
+    a decision whose inputs it was never shown.
 
-    assert str(rules.policy.pain_lock_threshold) not in prompt
-    assert str(rules.strategy.trigger_threshold) not in prompt
+    Uses sentinel threshold values rather than the real ones. A bare-digit
+    substring check against real thresholds is unsound -- "5" appears in the
+    word-limit instruction, so the test would fail on prose that has nothing to
+    do with the guarantee.
+    """
+    sentinel = PolicyRules(
+        pain_lock_threshold=7777,
+        pain_rest_only_threshold=8888,
+        compensation_flag_rate_lock=0.9999,
+        early_protocol_days=6666,
+        copy={"lock_loaded": "Squats are off today."},
+    )
+    prompt = build_prompt(lock(ReasonCode.PAIN_ELEVATED), sentinel)
+
+    for secret in ("7777", "8888", "6666", "0.9999"):
+        assert secret not in prompt, f"threshold {secret} leaked into the prompt"
     assert "flag_rate" not in prompt
-    assert "compensation_flag_rate_lock" not in prompt
+    assert "threshold" not in prompt.lower()
 
 
 def test_the_prompt_forbids_adding_reasons(rules):
     prompt = build_prompt(lock(ReasonCode.PAIN_ELEVATED), rules.policy)
-    assert "Do not add reasons" in prompt
-    assert "not listed" in prompt
+    assert "Add NOTHING else" in prompt
+    assert "No causes" in prompt
+    assert "no diagnoses" in prompt
+
+
+def test_the_prompt_states_how_many_facts_must_be_covered(rules):
+    """Small models drop facts for brevity when handed a bare list. An explicit
+    count gives them something to check themselves against -- and it is exactly
+    what check_containment() measures."""
+    prompt = build_prompt(
+        lock(ReasonCode.PAIN_ELEVATED, ReasonCode.SWELLING_INCREASED), rules.policy
+    )
+    assert "2 facts" in prompt
+    assert "cover all 2" in prompt
+
+    single = build_prompt(lock(ReasonCode.PAIN_ELEVATED), rules.policy)
+    assert "1 fact behind it" in single
 
 
 def test_the_prompt_carries_only_the_codes_in_this_decision(rules):
