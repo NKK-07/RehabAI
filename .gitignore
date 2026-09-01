@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------
+# PATIENT DATA — never commit. This is the whole point of Track 08.
+# The session database holds pain scores and swelling reports from
+# real people. Recorded footage holds their faces and their homes.
+# ---------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+data/sessions/
+data/recordings/
+recordings/
+*.mp4
+*.mov
+*.avi
+*.wav.recorded
+
+# Generated output — regenerate, don't track
+sheets/
+*.sheet.png
+out/
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# ---------------------------------------------------------------
+# Model weights and caches — large, and downloaded not authored
+# ---------------------------------------------------------------
+*.tflite
+*.onnx
+*.gguf
+*.bin
+.cache/
+models/weights/
+
+# ---------------------------------------------------------------
+# Office lock files (the ~$ prefix files Word/PowerPoint leave open)
+# ---------------------------------------------------------------
+~$*
+
+# ---------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------
+# Local-only config. Keep rules/thresholds.v1.json TRACKED — it is
+# the handoff artifact to the Kotlin build and must be versioned.
+# ---------------------------------------------------------------
+.env
+.env.local
+local_settings.py

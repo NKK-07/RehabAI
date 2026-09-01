@@ -1,0 +1,38 @@
+# RehabAI - on-device rehab companion (Python presentation prototype)
+# Verified working combination on Python 3.10/3.11 (Windows/Mac/Linux)
+
+# --- vision -----------------------------------------------------------
+mediapipe==0.10.21
+opencv-contrib-python==4.11.0.86
+numpy==1.26.4
+
+# --- UI shell (I13) ---------------------------------------------------
+# PySide6 hosts the session flow; camera frames are composited in OpenCV
+# and rendered into a QLabel, so Qt never sits inside the frame loop.
+PySide6>=6.6
+
+# --- live cue audio (I2) ----------------------------------------------
+# pyttsx3 is a BUILD-TIME tool only: it pre-renders the fixed cue phrases
+# to WAV. It must never be called at runtime -- runAndWait() blocks the
+# calling thread, which would stall the camera mid-rise.
+pyttsx3==2.99
+sounddevice>=0.4.6
+soundfile>=0.12.1
+
+# --- voice check-in (D3) ----------------------------------------------
+faster-whisper>=1.0.0
+
+# --- explain/ -> local LLM over Ollama HTTP (I4) ----------------------
+requests>=2.31
+
+# --- recovery sheet ---------------------------------------------------
+matplotlib>=3.8
+
+# --- tests (I9, I10) --------------------------------------------------
+pytest>=8.0
+
+# --- external runtime, NOT pip-installable ----------------------------
+# Ollama must be installed and running, with the model named in
+# rules/thresholds.v1.json pulled. Verified by the startup health check
+# in rehab_ai/explain/phrasing.py -- the app refuses to start without it.
+#   ollama pull gemma2:2b
