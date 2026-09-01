@@ -44,6 +44,8 @@ and loaded work stays off until there is evidence to permit it.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from rehab_ai.models.session import (
     CompensationStatus,
     Decision,
@@ -52,6 +54,7 @@ from rehab_ai.models.session import (
     PolicyInput,
     ReasonCode,
     SessionStatus,
+    SwellingComparison,
     SwellingComparisonStatus,
     SwellingReport,
 )
@@ -135,6 +138,41 @@ def decide(given: PolicyInput, rules: PolicyRules) -> LockDecision:
 # ---------------------------------------------------------------------------
 # Reason helpers -- each returns the codes for one input, and nothing else
 # ---------------------------------------------------------------------------
+
+
+def build_swelling_comparison(
+    report: SwellingReport,
+    previous_session_at: datetime | None,
+    now: datetime,
+    rules: PolicyRules,
+) -> SwellingComparison:
+    """Decide whether today's swelling report can be compared with anything.
+
+    The patient always answers the question. What varies is whether there is an
+    adjacent prior session to compare against.
+
+        no prior session          -> BASELINE_ONLY   expected on day one
+        prior session, adjacent   -> AVAILABLE       compare normally
+        prior session, a gap      -> NO_COMPARISON   never compare across it
+
+    Lives here, not in the UI, for the reason Issue 8 settled: a caller-side
+    guard is a secondary defence, not the place business rules go. If two
+    screens each decided this for themselves they could disagree, and the
+    "deterministic" policy would depend on which code path called it.
+
+    Pure -- takes the prior session's timestamp rather than a repository, so it
+    tests exhaustively with no database and no clock.
+    """
+    if previous_session_at is None:
+        return SwellingComparison(SwellingComparisonStatus.BASELINE_ONLY)
+
+    if now - previous_session_at > timedelta(days=rules.max_comparison_gap_days):
+        # Monday 4, Tuesday skipped, Wednesday 5. There is no "since
+        # yesterday" to report, and comparing Wednesday against Monday would
+        # invent a trend across a day nobody observed.
+        return SwellingComparison(SwellingComparisonStatus.NO_COMPARISON)
+
+    return SwellingComparison(SwellingComparisonStatus.AVAILABLE, report)
 
 
 def _pain_reasons(given: PolicyInput, rules: PolicyRules) -> list[ReasonCode]:

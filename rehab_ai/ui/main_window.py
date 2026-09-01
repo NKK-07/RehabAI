@@ -28,7 +28,7 @@ prose is missing, and the screen says so rather than substituting a template.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from PySide6.QtWidgets import QMainWindow, QStackedWidget
 
@@ -43,10 +43,9 @@ from rehab_ai.models.session import (
     SessionStatus,
     Side,
     SwellingComparison,
-    SwellingComparisonStatus,
     SwellingReport,
 )
-from rehab_ai.policy.engine import decide
+from rehab_ai.policy.engine import build_swelling_comparison, decide
 from rehab_ai.rules.loader import Rules
 from rehab_ai.storage.repository import SessionRepository
 from rehab_ai.ui.intake_view import IntakeView
@@ -114,23 +113,19 @@ class MainWindow(QMainWindow):
         self._start_live()
 
     def _build_swelling_comparison(self, report: SwellingReport) -> SwellingComparison:
-        """Decide whether today's report can be compared with anything.
+        """Fetch the prior session, then let policy/ decide what it means.
 
-        The patient always answers the question. What varies is whether there
-        is an adjacent prior session to compare against -- and a gap in the
-        calendar must produce NO_COMPARISON rather than a silent comparison
-        across it.
+        This method does lookup only. The rule about what a calendar gap means
+        lives in policy.build_swelling_comparison -- a caller-side guard is a
+        secondary defence, not where business rules belong, or two screens
+        could each decide it differently and the deterministic policy would
+        depend on which one called it.
         """
         now = datetime.now()
         previous = self._repo.previous_session(now, self._profile.operated_side)
+        previous_at = previous.started_at if previous else None
 
-        if previous is None or previous.started_at is None:
-            return SwellingComparison(SwellingComparisonStatus.BASELINE_ONLY)
-
-        if now - previous.started_at > timedelta(days=2):
-            return SwellingComparison(SwellingComparisonStatus.NO_COMPARISON)
-
-        return SwellingComparison(SwellingComparisonStatus.AVAILABLE, report)
+        return build_swelling_comparison(report, previous_at, now, self._rules.policy)
 
     # -- live session -------------------------------------------------------
 

@@ -103,11 +103,12 @@ def test_the_prompt_never_contains_raw_inputs_or_thresholds():
         pain_rest_only_threshold=8888,
         compensation_flag_rate_lock=0.9999,
         early_protocol_days=6666,
+        max_comparison_gap_days=5555,
         copy={"lock_loaded": "Squats are off today."},
     )
     prompt = build_prompt(lock(ReasonCode.PAIN_ELEVATED), sentinel)
 
-    for secret in ("7777", "8888", "6666", "0.9999"):
+    for secret in ("7777", "8888", "6666", "5555", "0.9999"):
         assert secret not in prompt, f"threshold {secret} leaked into the prompt"
     assert "flag_rate" not in prompt
     assert "threshold" not in prompt.lower()

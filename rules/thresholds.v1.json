@@ -69,6 +69,10 @@
     "pain_rest_only_threshold": 8,
     "compensation_flag_rate_lock": 0.40,
     "early_protocol_days": 7,
+    "_doc_gap": "Max days between sessions for a swelling comparison to be valid.",
+    "_doc_gap_2": "Beyond this the prior session is not 'yesterday' and the status",
+    "_doc_gap_3": "becomes NO_COMPARISON rather than a silent compare across the gap.",
+    "max_comparison_gap_days": 2,
     "_doc_copy": "Calm and specific, never alarming (PRD 8). Salvaged from FEATURES.md 4.",
     "copy": {
       "allow_full": "Everything is on the plan today.",

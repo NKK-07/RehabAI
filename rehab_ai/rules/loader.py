@@ -96,6 +96,7 @@ class PolicyRules:
     pain_rest_only_threshold: int
     compensation_flag_rate_lock: float
     early_protocol_days: int
+    max_comparison_gap_days: int
     copy: dict[str, str]
 
 
@@ -278,6 +279,7 @@ def load_rules(path: Path | str | None = None) -> Rules:
         pain_rest_only_threshold=_num(pol_raw, "policy", "pain_rest_only_threshold", cast=int),
         compensation_flag_rate_lock=_num(pol_raw, "policy", "compensation_flag_rate_lock"),
         early_protocol_days=_num(pol_raw, "policy", "early_protocol_days", cast=int),
+        max_comparison_gap_days=_num(pol_raw, "policy", "max_comparison_gap_days", cast=int),
         copy={str(k): str(v) for k, v in copy_raw.items()},
     )
 
@@ -380,3 +382,9 @@ def _check_coherence(r: Rules) -> None:
 
     if not 0.0 <= r.policy.compensation_flag_rate_lock <= 1.0:
         raise RulesError("policy.compensation_flag_rate_lock must be within 0.0..1.0")
+
+    if r.policy.max_comparison_gap_days < 1:
+        raise RulesError(
+            "policy.max_comparison_gap_days must be at least 1. A value of 0 would make "
+            "every session NO_COMPARISON, silently removing swelling from the decision."
+        )
